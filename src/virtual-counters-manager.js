@@ -1,3 +1,5 @@
+/* eslint-disable no-undef */
+/* eslint-disable multiline-comment-style */
 /* eslint-disable no-restricted-globals */
 /* eslint-disable consistent-return */
 /* eslint-disable no-console */
@@ -6,8 +8,12 @@
 /* eslint-disable prefer-destructuring */
 
 const totalSteps = 2 ** 23;
-const MCP = 128;
-const MCPL = 30;
+const MCPL = 23;
+let MCP = 128;
+const { Scalar, F1Field } = require('ffjavascript');
+
+const FPEC = Scalar.e('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F');
+const FNEC = Scalar.e('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141');
 module.exports = class VirtualCountersManager {
     /**
      * constructor class
@@ -88,6 +94,14 @@ module.exports = class VirtualCountersManager {
     }
 
     /**
+     * Set sparse merkle tree levels for poseidon counters computation
+     * @param {Number} levels number of levels
+     */
+    setSMTLevels(levels) {
+        MCP = levels;
+    }
+
+    /**
      * Inits main counters snapshot to monitor current function call consumption
      */
     initSnapshot() {
@@ -147,35 +161,39 @@ module.exports = class VirtualCountersManager {
     }
 
     rlpParsing(input) {
-        this._checkInput(input, ['txRLPLength', 'txDataLen']);
+        this._checkInput(input, ['txRLPLength', 'txDataLen', 'gasPriceLen', 'gasLimitLen', 'valueLen', 'chainIdLen', 'nonceLen']);
+        const {
+            txRLPLength, txDataLen, gasPriceLen, gasLimitLen, valueLen, chainIdLen, nonceLen,
+        } = input;
         this._reduceCounters(250, 'S');
         this._reduceCounters(3 + 1, 'B');
-        this._reduceCounters(Math.ceil(input.txRLPLength / 136), 'K');
-        this._reduceCounters(Math.ceil(input.txRLPLength / 56), 'P');
-        this._reduceCounters(Math.ceil(input.txRLPLength / 56), 'D');
+        this._reduceCounters(Math.ceil(txRLPLength / 136), 'K');
+        this._reduceCounters(Math.ceil(txRLPLength / 56), 'P');
+        this._reduceCounters(Math.ceil(txRLPLength / 56), 'D');
         this._multiCall('_addBatchHashData', 21);
         /**
          * We need to calculate the counters consumption of `_checkNonLeadingZeros`, which calls `_getLenBytes`
          * _checkNonLeadingZeros is called 7 times
          * The worst case scenario each time `_checkNonLeadingZeros`+ `_getLenBytes` is called is the following:
          * readList -> aprox 300000 bytes -> the size can be expressed qith 3 bytes -> len(hex(300000)) = 3 bytes
-         * gasPrice -> 256 bits -> 1 bytes
-         * gasLimit -> 64 bits -> 1 bytes
-         * value -> 256 bits -> 1 bytes
-         * dataLen -> 300000 bytes -> 3 bytes
-         * chainId -> 64 bits -> 1 bytes
-         * total max bytes: 10 bytes
+         * gasPrice -> 256 bits -> 32 bytes
+         * gasLimit -> 64 bits -> 8 bytes
+         * value -> 256 bits -> 32 bytes
+         * dataLen -> 300000 bytes -> xxxx bytes
+         * chainId -> 64 bits -> 8 bytes
+         * nonce -> 64 bits -> 8 bytes
          */
         this._reduceCounters(6 * 7, 'S'); // Steps to call _checkNonLeadingZeros 7 times
-        [3, 1, 1, 1, 3, 1].forEach((bytesLen) => {
+        [3, gasPriceLen, gasLimitLen, valueLen, txDataLen, chainIdLen, nonceLen].forEach((bytesLen) => {
             this._getLenBytes({ lenBytesInput: bytesLen });
         });
         this._divArith();
-        this._multiCall('_addHashTx', 9 + Math.floor(input.txDataLen / 32));
-        this._multiCall('_addL2HashTx', 8 + Math.floor(input.txDataLen / 32));
-        this._multiCall('_addBatchHashByteByByte', input.txDataLen);
+        this._multiCall('_addHashTx', 9 + Math.floor(txDataLen / 32));
+        this._multiCall('_addL2HashTx', 8 + Math.floor(txDataLen / 32));
+        this._multiCall('_addBatchHashByteByByte', txDataLen);
         this._SHLarith();
-        this._ecrecoverTx();
+        input.isPrecompiled = false;
+        this._ecrecover(input);
     }
 
     decodeChangeL2BlockTx() {
@@ -209,11 +227,13 @@ module.exports = class VirtualCountersManager {
         this._setupNewBlockInfoTree();
     }
 
-    preECRecover() {
+    preECRecover(input) {
+        this._checkInput(input, ['v', 'r', 's']);
         this._reduceCounters(35, 'S');
         this._reduceCounters(1, 'B');
         this._multiCall('_readFromCalldataOffset', 4);
-        this._ecrecoverTx();
+        input.isPrecompiled = true;
+        this._ecrecover(input);
         this._mStore32();
         this._mStoreX();
     }
@@ -1247,7 +1267,7 @@ module.exports = class VirtualCountersManager {
         const numBlocks = Math.ceil(input.pushBytes / 4);
         const leftBytes = input.pushBytes % 4;
 
-        for (let i = 0; i < numBlocks; i++) {
+        for (let i = 0; i <= numBlocks; i++) {
             this._reduceCounters(20, 'S');
             this._reduceCounters(1, 'B');
             for (let j = i - 1; j > 0; j--) {
@@ -1408,11 +1428,85 @@ module.exports = class VirtualCountersManager {
         this._reduceCounters(2 * MCPL, 'P');
     }
 
-    _ecrecoverTx() {
-        this._reduceCounters(6400, 'S');
-        this._reduceCounters(1600, 'B');
-        this._reduceCounters(1100, 'A');
+    _ecrecover(input) {
+        this._checkInput(input, ['v', 'r', 's', 'isPrecompiled']);
+        // this._reduceCounters(6400, 'S');
+        // this._reduceCounters(1600, 'B');
+        // this._reduceCounters(1100, 'A');
+        this._reduceCounters(40, 'S');
         this._reduceCounters(1, 'K');
+        this._reduceCounters(10, 'B');
+        this._invFnEc();
+        // Check ecrecover fails for invalid r,s,v
+        const sUpperLimit = input.isPrecompiled ? Scalar.sub(FNEC, 1) : Scalar.div(FNEC, 2);
+        if (input.r === 0n || Scalar.lt(FNEC - 1n, input.r) || input.s === 0n || Scalar.lt(sUpperLimit, input.s) || (input.v !== 27n && input.v !== 28n)) {
+            return;
+        }
+        this._multiCall('_mulFpEc', 2);
+        this._addFpEc();
+        this._sqrtFpEc();
+        // Check if has sqrt to aviod counters at _checkSqrtFpEc
+        const c = Scalar.mod(Scalar.add(Scalar.exp(input.r, 3), 7), FPEC);
+        const Fec = new F1Field(FPEC);
+        // r = sqrt(c)
+        let r = Fec.sqrt(c);
+        const parity = input.v === 27n ? 0n : 1n;
+        if (r === null) {
+            r = Scalar.e('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF');
+        } else if ((r & 0x01n) !== parity) {
+            r = Fec.neg(r);
+        }
+        const b = Number(Scalar.lt(r, FPEC));
+        if (b === 0) {
+            this._checkSqrtFpEc();
+        }
+        this._reduceCounters(1, 'A');
+        this._mulPointEc();
+    }
+
+    _mulPointEc() {
+        this._reduceCounters(6160, 'S');
+        this._reduceCounters(256 * 5, 'B');
+        this._reduceCounters(512, 'A');
+    }
+
+    _checkSqrtFpEc() {
+        this._reduceCounters(758, 'S');
+        this._multiCall('_sqFpEc', 254);
+        this._multiCall('_mulFpEc', 248);
+        this._reduceCounters(1, 'B');
+    }
+
+    _sqFpEc() {
+        this._reduceCounters(8, 'S');
+        this._reduceCounters(2, 'A');
+    }
+
+    _sqrtFpEc() {
+        this._reduceCounters(15, 'S');
+        this._reduceCounters(2, 'A');
+        this._reduceCounters(1, 'B');
+    }
+
+    _addFpEc() {
+        this._reduceCounters(7, 'S');
+        this._reduceCounters(2, 'A');
+    }
+
+    _mulFpEc() {
+        this._reduceCounters(7, 'S');
+        this._reduceCounters(2, 'A');
+    }
+
+    _mulFnEc() {
+        this._reduceCounters(7, 'S');
+        this._reduceCounters(2, 'A');
+    }
+
+    _invFnEc() {
+        this._reduceCounters(12, 'S');
+        this._reduceCounters(2, 'B');
+        this._reduceCounters(2, 'A');
     }
 
     _processContractCall(input) {
@@ -1577,7 +1671,10 @@ module.exports = class VirtualCountersManager {
             if (typeof input[key] === 'boolean') {
                 input[key] = input[key] ? 1 : 0;
             }
-            if (typeof input[key] !== 'number') {
+            if (typeof input[key] === 'string') {
+                input[key] = BigInt(input[key]);
+            }
+            if (typeof input[key] !== 'number' && typeof input[key] !== 'bigint') {
                 this._throwError(`Missing or invalid input ${key} at function ${this.calledFunc}`);
             }
         });
