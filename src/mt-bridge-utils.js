@@ -45,10 +45,11 @@ function verifyMerkleProof(leaf, smtProof, index, root) {
  * @param {String} destinationAddress - Destination address
  * @param {BigNumber} amount - Amount of tokens
  * @param {BigNumber} metadataHash - Hash of the metadata
+ * @param {Number} fromNetworkID - from network
  * @returns {Boolean} - Leaf value
  */
-function getLeafValue(leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, metadataHash) {
-    return ethers.utils.solidityKeccak256(['uint8', 'uint32', 'address', 'uint32', 'address', 'uint256', 'bytes32'], [leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, metadataHash]);
+function getLeafValue(leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, metadataHash, fromNetworkID) {
+    return ethers.utils.solidityKeccak256(['uint8', 'uint32', 'address', 'uint32', 'address', 'uint256', 'bytes32'], [leafType, originNetwork, originAddress, destinationNetwork, destinationAddress, amount, metadataHash, fromNetworkID]);
 }
 
 module.exports = {
